@@ -57,6 +57,16 @@ async def on_ready():
     print("Synced and Ready!")
 
 
+@bot.tree.command(name="reserve", description="Reserve seats at the Analog Bar!")
+async def reserve(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="Reserve a seat at the Analog Bar!",
+        description="Click the title above to book your spot!",
+        url="https://carabellocoffee.resurva.com/",
+        color=discord.Color.green()
+    )
+    await interaction.response.send_message(embed=embed)
+
 @bot.tree.command(name="analog", description="Show the Analog Bar menu this month")
 async def analog_menu(interaction: discord.Interaction):
     await interaction.response.defer()  # gives you more time if scraping is slow
@@ -71,6 +81,7 @@ async def analog_menu(interaction: discord.Interaction):
     embed = discord.Embed(title="Analog Bar Menu", color=discord.Color.green())
     embed.set_image(url=menu)
     await interaction.followup.send(embed=embed)
+
 
 @bot.tree.command(name="events", description="Show upcoming Carabello coffee classes")
 async def events(interaction: discord.Interaction):
@@ -104,5 +115,6 @@ async def events(interaction: discord.Interaction):
         embeds.append(embed)
 
     await interaction.followup.send(embeds=embeds[:10])
+
 
 bot.run(TOKEN)
