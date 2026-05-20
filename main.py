@@ -5,15 +5,24 @@ import asyncio
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from discord.ext import commands
+from aiohttp import web
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
-ServerID=os.getenv("SERVERID")
+SERVERID = int(os.getenv("SERVERID"))
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+}
+
+EXPECTED_PAYLOAD = {
+    "source": "home_assistant",
+    "event": "loc-ping"
 }
 
 def fetch_soup(url):
@@ -51,11 +60,10 @@ def get_coffee_classes():
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    guild = discord.Object(id=ServerID)
+    guild = discord.Object(id=SERVERID)
     bot.tree.copy_global_to(guild=guild)
     await bot.tree.sync(guild=guild)
     print("Synced and Ready!")
-
 
 @bot.tree.command(name="reserve", description="Reserve seats at the Analog Bar!")
 async def reserve(interaction: discord.Interaction):
@@ -69,9 +77,9 @@ async def reserve(interaction: discord.Interaction):
 
 @bot.tree.command(name="analog", description="Show the Analog Bar menu this month")
 async def analog_menu(interaction: discord.Interaction):
-    await interaction.response.defer()  # gives you more time if scraping is slow
+    await interaction.response.defer()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     menu = await loop.run_in_executor(None, get_analog_menu_image)
 
     if not menu:
@@ -82,12 +90,11 @@ async def analog_menu(interaction: discord.Interaction):
     embed.set_image(url=menu)
     await interaction.followup.send(embed=embed)
 
-
 @bot.tree.command(name="events", description="Show upcoming Carabello coffee classes")
 async def events(interaction: discord.Interaction):
     await interaction.response.defer()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     classes = await loop.run_in_executor(None, get_coffee_classes)
 
     if not classes:
@@ -99,11 +106,8 @@ async def events(interaction: discord.Interaction):
 
     for event in classes:
         url = event["image_url"]
-
-        # Track how many times we've seen this URL
         seen_urls[url] = seen_urls.get(url, 0) + 1
         if seen_urls[url] > 1:
-            # Append a dummy query param to make it unique (Otherwise discord won't load the image)
             url = f"{url}?v={seen_urls[url]}"
 
         embed = discord.Embed(
@@ -116,5 +120,34 @@ async def events(interaction: discord.Interaction):
 
     await interaction.followup.send(embeds=embeds[:10])
 
+async def handle_webhook(request):
+    secret = request.headers.get("X-Webhook-Secret")
+    if secret != WEBHOOK_SECRET:
+        return web.Response(status=401, text="Unauthorized")
 
-bot.run(TOKEN)
+    data = await request.json()
+
+    if data.get("source") != EXPECTED_PAYLOAD["source"] or \
+       data.get("event") != EXPECTED_PAYLOAD["event"]:
+        return web.Response(status=400, text="Unrecognized payload")
+
+    person = data.get("person", "Someone")
+    channel = bot.get_channel(CHANNEL_ID)
+    await channel.send(f"@here {person} is at Carabello!")
+
+    return web.Response(text="OK")
+
+async def start_webserver():
+    app = web.Application()
+    app.router.add_post("/webhook", handle_webhook)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
+    print("Webhook listener running on port 8080")
+
+async def main():
+    await start_webserver()
+    await bot.start(TOKEN)
+
+asyncio.run(main())
