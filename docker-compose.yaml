@@ -1,0 +1,24 @@
+# docker-compose.yml
+services:
+  bot:
+    build: .
+    container_name: bellobot
+    env_file: .env
+    networks:
+      - bellonet
+    restart: unless-stopped
+
+  cloudflare:
+    image: cloudflare/cloudflared:latest
+    container_name: cf-tunnel
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN}
+    env_file: .env
+    networks:
+      - bellonet
+    restart: unless-stopped
+    depends_on:
+      - bot
+
+networks:
+  bellonet:
+    driver: bridge
