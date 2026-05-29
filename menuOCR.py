@@ -44,9 +44,9 @@ def extract_menu_text(source: str, preprocess: bool = True) -> str:
     if source.startswith("http://") or source.startswith("https://"):
         response = requests.get(source)
         response.raise_for_status()
-        img = Image.open(BytesIO(response.content))
+        img = Image.open(BytesIO(response.content)).convert("RGB")
     else:
-        img = Image.open(source)
+        img = Image.open(source).convert("RGB")
 
     columns = _detect_columns(img)
 

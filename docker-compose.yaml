@@ -4,6 +4,10 @@ services:
     build: .
     container_name: bellobot
     env_file: .env
+    environment:
+      - VOTES_PATH=/data/votes.json
+    volumes:
+      - votes_data:/data
     networks:
       - bellonet
     restart: unless-stopped
@@ -22,3 +26,6 @@ services:
 networks:
   bellonet:
     driver: bridge
+
+volumes:
+  votes_data:
