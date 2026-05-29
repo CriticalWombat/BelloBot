@@ -63,10 +63,13 @@ async def on_ready():
     guild = discord.Object(id=SERVERID)
     bot.tree.copy_global_to(guild=guild)
     await bot.tree.sync(guild=guild)
-    # Seed menu cache from last known session so autocomplete is instant on restart
+    # Seed from disk immediately so autocomplete works before the OCR fetch completes
     saved = get_active_items()
     if saved:
         _menu_cache["items"] = saved
+        _menu_cache["ts"] = time.monotonic()
+    # Refresh from the live menu in the background regardless
+    asyncio.create_task(get_menu_items())
     print("Synced and Ready!")
 
 @bot.tree.command(name="reserve", description="Reserve seats at the Analog Bar!")
