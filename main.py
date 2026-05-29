@@ -267,7 +267,7 @@ async def votehistory(interaction: discord.Interaction):
     await interaction.response.send_message(embeds=embeds[:10])
 
 
-@bot.tree.command(name="AddNote", description="Leave a note on an Analog Bar drink")
+@bot.tree.command(name="add_note", description="Leave a note on an Analog Bar drink")
 @app_commands.describe(drink="The drink to annotate", note="Your note (max 500 characters)")
 @app_commands.autocomplete(drink=vote_autocomplete)
 async def add_note_cmd(interaction: discord.Interaction, drink: str, note: str):
@@ -305,7 +305,7 @@ async def notes_cmd(interaction: discord.Interaction):
     session = get_active_results()
     if not session:
         await interaction.response.send_message(
-            "No menu session yet — use `/vote` or `/AddNote` to get started.", ephemeral=True
+            "No menu session yet — use `/vote` or `/add_note` to get started.", ephemeral=True
         )
         return
 
