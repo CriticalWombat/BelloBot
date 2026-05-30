@@ -147,18 +147,22 @@ def _detect_columns(img: Image.Image, search_band: tuple = (0.35, 0.65)) -> list
 
     data = pytesseract.image_to_data(
         detect_img, config="--psm 4 --oem 3",
-        output_type=pytesseract.Output.DATAFRAME
+        output_type=pytesseract.Output.DICT
     )
-    words = data[(data.conf > 30) & (data.text.str.strip() != "")].copy()
+    words = [
+        (data["left"][i], data["width"][i])
+        for i in range(len(data["text"]))
+        if data["text"][i].strip() and int(data["conf"][i]) > 30
+    ]
 
-    if words.empty:
+    if not words:
         return [(0, img.width)]
 
     # Build density histogram in original image coordinates
     hist = np.zeros(img.width)
-    for _, row in words.iterrows():
-        l = int(row["left"] / scale)
-        r = int((row["left"] + row["width"]) / scale)
+    for left, width in words:
+        l = int(left / scale)
+        r = int((left + width) / scale)
         l, r = max(0, l), min(img.width, r)
         hist[l:r] += 1
 

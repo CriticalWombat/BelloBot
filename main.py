@@ -8,7 +8,7 @@ from discord.ext import commands
 from aiohttp import web
 from scraper import get_analog_menu_image, get_coffee_classes
 from menuOCR import extract_menu_text, parse_menu_items, format_menu
-from votes import cast_vote, add_note, get_active_results, get_archived_sessions, get_active_items
+from votes import cast_vote, add_note, compute_scores, get_active_results, get_archived_sessions, get_active_items, TIER_ICONS, TIER_WEIGHTS
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
@@ -95,17 +95,35 @@ async def analog_menu(interaction: discord.Interaction):
 
     embed = discord.Embed(title="Analog Bar Menu", color=discord.Color.green())
     embed.set_image(url=menu)
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="debug", description="Show raw OCR output and parsed drink names from the current menu image")
+async def debug(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    loop = asyncio.get_running_loop()
+    url = await loop.run_in_executor(None, get_analog_menu_image)
+    if not url:
+        await interaction.followup.send("Could not fetch the menu image URL.")
+        return
 
     try:
-        raw_text = await loop.run_in_executor(None, extract_menu_text, menu)
-        items = parse_menu_items(raw_text)
-        menu_text = format_menu(items) if items else raw_text
-        if menu_text:
-            embed.description = menu_text[:4096]
-    except Exception:
-        pass  # OCR failed; still show the image
+        raw_text = await loop.run_in_executor(None, extract_menu_text, url)
+    except Exception as e:
+        await interaction.followup.send(f"OCR failed: {e}")
+        return
 
-    await interaction.followup.send(embed=embed)
+    parsed = parse_menu_items(raw_text)
+    names = [item["name"] for item in parsed if item["name"]]
+
+    output = (
+        f"**Image URL:** {url}\n\n"
+        f"**Parsed drink names ({len(names)}):**\n"
+        + ("\n".join(f"• {n}" for n in names) if names else "*(none)*")
+        + f"\n\n**Raw OCR text:**\n```\n{raw_text[:1800]}\n```"
+    )
+    await interaction.followup.send(output[:2000])
+
 
 async def vote_autocomplete(
     interaction: discord.Interaction, current: str
@@ -120,60 +138,42 @@ async def vote_autocomplete(
 
 def _build_session_embed(session: dict, active: bool) -> discord.Embed:
     """
-    Build an embed for a session showing votes (with voters) and any notes.
-    Used by /results, /votehistory, and /notes.
+    Build a votes embed for a session sorted by weighted score (gold=3, silver=2, bronze=1).
+    Shows each drink's total points and which users assigned each tier.
+    Used by /results and /votehistory.
     """
-    medals = ["🥇", "🥈", "🥉"]
     started = session["started_at"][:10]
     if active:
-        title = f"Current Menu — Menu #{session['id']} (since {started})"
+        title = f"Current Menu Votes — Menu #{session['id']} (since {started})"
         color = discord.Color.green()
     else:
         ended = session["ended_at"][:10]
-        title = f"Menu #{session['id']}  ({started} → {ended})"
+        title = f"Menu #{session['id']} Results  ({started} → {ended})"
         color = discord.Color.blurple()
 
     embed = discord.Embed(title=title, color=color)
 
-    # --- Votes section ---
-    sorted_votes = sorted(
-        session["votes"].items(), key=lambda x: len(x[1]), reverse=True
-    )
-    vote_fields = 0
-    for i, (drink, voters) in enumerate(sorted_votes):
-        count = len(voters)
-        if count == 0:
-            continue
-        medal = medals[i] if i < len(medals) else f"`{i + 1}.`"
-        names = list(voters.values())
-        voter_str = ", ".join(names[:10])
-        if len(names) > 10:
-            voter_str += f" *+{len(names) - 10} more*"
+    scores = compute_scores(session["votes"])
+    if not scores:
+        embed.description = "No votes recorded."
+        return embed
+
+    ranked = sorted(scores.items(), key=lambda x: x[1]["score"], reverse=True)
+    for rank, (drink, data) in enumerate(ranked, 1):
+        score = data["score"]
+        lines = []
+        for tier in ("gold", "silver", "bronze"):
+            names = data[tier]
+            if names:
+                pts = TIER_WEIGHTS[tier]
+                lines.append(
+                    f"{TIER_ICONS[tier]} {', '.join(names)}  *({len(names)}×{pts}pts)*"
+                )
         embed.add_field(
-            name=f"{medal} {drink} — {count} vote{'s' if count != 1 else ''}",
-            value=voter_str,
+            name=f"{rank}. {drink} — {score} pt{'s' if score != 1 else ''}",
+            value="\n".join(lines),
             inline=False,
         )
-        vote_fields += 1
-
-    if vote_fields == 0:
-        embed.add_field(name="Votes", value="No votes recorded.", inline=False)
-
-    # --- Notes section ---
-    notes = session.get("notes", {})
-    noted_drinks = [(drink, entries) for drink, entries in notes.items() if entries]
-    if noted_drinks:
-        embed.add_field(name="​", value="**📝 Notes**", inline=False)
-        for drink, entries in noted_drinks:
-            lines = []
-            for entry in entries:
-                date = entry["timestamp"][:10]
-                lines.append(f"• {entry['text']} — *{entry['user_name']}, {date}*")
-            embed.add_field(
-                name=drink,
-                value="\n".join(lines)[:1024],
-                inline=False,
-            )
 
     return embed
 
@@ -213,9 +213,18 @@ def _build_notes_embed(session: dict, active: bool) -> discord.Embed:
     return embed
 
 
-@bot.tree.command(name="vote", description="Vote for your favorite Analog Bar drink this month!")
+@bot.tree.command(name="vote", description="Assign your gold, silver, or bronze vote to an Analog Bar drink")
+@app_commands.describe(
+    drink="The drink you want to vote for",
+    tier="Your vote tier — gold (3 pts), silver (2 pts), or bronze (1 pt)",
+)
+@app_commands.choices(tier=[
+    app_commands.Choice(name="🥇 Gold (3 pts)",   value="gold"),
+    app_commands.Choice(name="🥈 Silver (2 pts)", value="silver"),
+    app_commands.Choice(name="🥉 Bronze (1 pt)",  value="bronze"),
+])
 @app_commands.autocomplete(drink=vote_autocomplete)
-async def vote(interaction: discord.Interaction, drink: str):
+async def vote(interaction: discord.Interaction, drink: str, tier: str):
     items = await get_menu_items()
     if not items:
         await interaction.response.send_message(
@@ -231,15 +240,13 @@ async def vote(interaction: discord.Interaction, drink: str):
 
     user_id = str(interaction.user.id)
     user_name = interaction.user.display_name
-    count, new_session = cast_vote(drink, items, user_id, user_name)
+    displaced, new_session = cast_vote(drink, items, user_id, user_name, tier)
 
-    if count is None:
-        await interaction.response.send_message(
-            "You've already voted this menu cycle — one vote per person!", ephemeral=True
-        )
-        return
-
-    msg = f"Voted for **{drink}**! It now has **{count}** vote{'s' if count != 1 else ''}."
+    icon = TIER_ICONS[tier]
+    if displaced:
+        msg = f"Moved your {icon} **{tier.capitalize()}** vote from **{displaced}** to **{drink}**!"
+    else:
+        msg = f"Assigned your {icon} **{tier.capitalize()}** vote to **{drink}**!"
     if new_session:
         msg += "\n*(The menu changed — a fresh tally has been started and the old results are archived.)*"
     await interaction.response.send_message(msg)
@@ -248,7 +255,7 @@ async def vote(interaction: discord.Interaction, drink: str):
 @bot.tree.command(name="results", description="Show vote tallies for the current Analog Bar menu")
 async def results(interaction: discord.Interaction):
     session = get_active_results()
-    if not session or not any(session["votes"].values()):
+    if not session or not compute_scores(session["votes"]):
         await interaction.response.send_message(
             "No votes have been cast yet — be the first with `/vote`!", ephemeral=True
         )

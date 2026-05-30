@@ -6,6 +6,9 @@ from pathlib import Path
 
 VOTES_FILE = Path(os.getenv("VOTES_PATH", "data/votes.json"))
 
+TIER_WEIGHTS = {"gold": 3, "silver": 2, "bronze": 1}
+TIER_ICONS   = {"gold": "🥇", "silver": "🥈", "bronze": "🥉"}
+
 
 def _hash_items(items: list[str]) -> str:
     key = "\n".join(sorted(items))
@@ -45,7 +48,7 @@ def _ensure_notes(session: dict):
 def _get_or_create_session(data: dict, current_items: list[str]) -> tuple[dict, bool]:
     """
     Return the active session, creating a new one if none exists or the menu
-    has changed.  Also closes the previous session when rotating.
+    has changed.  Closes the previous session when rotating.
 
     Returns (session, new_session_started).
     """
@@ -64,7 +67,7 @@ def _get_or_create_session(data: dict, current_items: list[str]) -> tuple[dict, 
         "id": new_id,
         "menu_hash": current_hash,
         "items": current_items,
-        "votes": {n: {} for n in current_items},
+        "votes": {},
         "notes": {n: [] for n in current_items},
         "started_at": _now_iso(),
         "ended_at": None,
@@ -73,28 +76,57 @@ def _get_or_create_session(data: dict, current_items: list[str]) -> tuple[dict, 
     return session, True
 
 
+def compute_scores(votes: dict) -> dict[str, dict]:
+    """
+    Derive per-drink scores from the per-user ballot structure.
+
+    Returns {drink: {"score": int, "gold": [names], "silver": [names], "bronze": [names]}}
+    Only drinks that received at least one vote are included.
+    """
+    scores: dict[str, dict] = {}
+    for ballot in votes.values():
+        if not isinstance(ballot, dict) or "user_name" not in ballot:
+            continue
+        name = ballot["user_name"]
+        for tier in ("gold", "silver", "bronze"):
+            drink = ballot.get(tier)
+            if not drink:
+                continue
+            if drink not in scores:
+                scores[drink] = {"score": 0, "gold": [], "silver": [], "bronze": []}
+            scores[drink]["score"] += TIER_WEIGHTS[tier]
+            scores[drink][tier].append(name)
+    return scores
+
+
 def cast_vote(
     item_name: str,
     current_items: list[str],
     user_id: str,
     user_name: str,
-) -> tuple[int | None, bool]:
+    tier: str,
+) -> tuple[str | None, bool]:
     """
-    Record a vote for item_name by user_id.
+    Assign tier ("gold", "silver", or "bronze") to item_name for user_id.
 
-    Returns (new_count, new_session_started).
-    Returns (None, False) if the user has already voted this session.
+    If the user already had that tier on a different drink, it is displaced.
+    Returns (displaced_drink_or_None, new_session_started).
     """
     data = _load()
     active, new_session = _get_or_create_session(data, current_items)
 
-    already_voted = any(user_id in voters for voters in active["votes"].values())
-    if already_voted:
-        return None, False
+    ballot = active["votes"].setdefault(user_id, {
+        "user_name": user_name,
+        "gold": None,
+        "silver": None,
+        "bronze": None,
+    })
+    ballot["user_name"] = user_name  # refresh display name in case it changed
 
-    active["votes"].setdefault(item_name, {})[user_id] = user_name
+    displaced = ballot.get(tier)          # drink previously holding this tier
+    ballot[tier] = item_name
     _save(data)
-    return len(active["votes"][item_name]), new_session
+    return displaced if displaced != item_name else None, new_session
 
 
 def add_note(
@@ -106,7 +138,7 @@ def add_note(
 ) -> bool:
     """
     Append a note to item_name for the current session.
-    Returns True if a new session was started (menu changed), False otherwise.
+    Returns True if a new session was started (menu changed).
     """
     data = _load()
     active, new_session = _get_or_create_session(data, current_items)
